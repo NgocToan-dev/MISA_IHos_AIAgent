@@ -7,6 +7,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from inference.run import invoke_agent
 from model.schemas import AgentRequest, AgentResponse
+from services.mongo.mongo_repo import insert_many
+from typing import List, Dict, Any
 
 app = FastAPI(title="LangGraph Base Agent", version="0.1.0")
 
@@ -22,3 +24,21 @@ def invoke(req: AgentRequest):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+class InsertManyRequest(BaseModel):
+    col: str
+    documents: List[Dict[str, Any]]
+
+
+class InsertManyResponse(BaseModel):
+    inserted_ids: List[str]
+
+
+@app.post("/insert_many", response_model=InsertManyResponse)
+def mongo_insert_many(req: InsertManyRequest):
+    if not req.documents:
+        raise HTTPException(status_code=400, detail="documents rỗng")
+    print(f"Insert {len(req.documents)} documents")
+    ids = insert_many(req.col, req.documents)
+    return InsertManyResponse(inserted_ids=ids)

@@ -20,6 +20,7 @@ import os
 
 _lock = threading.Lock()
 _client: Optional[MongoClient] = None
+_collectionName = "misa_ihos"
 
 
 def _build_uri() -> str:
