@@ -16,24 +16,8 @@ from services.milvus.milvus_repo import (
     create_index,
 )
 import os
-
-
-def _serialize_hospital(h) -> Dict[str, str]:
-    return {
-        "id": h.id,
-        "name": h.name,
-        "province": h.province,
-        "specialties": h.specialties,
-        "level": h.level,
-    }
-
-
-@tool
-def hospital_list(keyword: str) -> str:
-    """Tra cứu bệnh viện theo từ khóa (tên, tỉnh, chuyên khoa). Tham số: keyword (ví dụ 'Ha Noi tim mach'). Trả JSON."""
-    hospitals = search_hospitals_by_keyword(keyword)
-    items = [_serialize_hospital(h) for h in hospitals]
-    return json.dumps({"count": len(items), "items": items}, ensure_ascii=False)
+from collections import Counter, defaultdict
+from datetime import datetime
 
 
 @tool
@@ -42,12 +26,11 @@ def echo(text: str = "") -> str:
     return f"ECHO: {text}" if text else "ECHO: (empty)"
 
 @tool
-def all_employees_with_departments_info() -> str:
+def all_employees() -> str:
     """
-    Trả về thông tin tất cả nhân viên và phòng ban liên quan.
-    Trả JSON gồm danh sách nhân viên và phòng ban.
+    Trả về thông tin tất cả nhân viên.
+    Trả JSON gồm danh sách nhân viên.
     Nhân viên bao gồm các thông tin: tên, tuổi, ngày sinh, số điện thoại, vị trí làm việc
-    Phòng ban bao gồm các thông tin: Tên phòng ban, số giường bệnh, trạng thái hoạt động
     """
     employees = find_many("employees")
     results = []
@@ -137,7 +120,7 @@ def ihos_doc_search(query: str, collection: Optional[str] = None) -> str:
     except Exception as e:
         return json.dumps({"error": f"MilvusSearchError: {e}"}, ensure_ascii=False)
 
-ALL_TOOLS = [hospital_list, echo, all_employees_with_departments_info, employees_by_department_names, ihos_doc_search]
+ALL_TOOLS = [echo, all_employees, employees_by_department_names, ihos_doc_search]
 duckduckgo_search = DuckDuckGoSearchRun()
 
 @tool
@@ -149,16 +132,156 @@ def internet_search(query: str) -> str:
     """
     return duckduckgo_search.invoke(query)
 
+@tool
+def chart_employees_by_department() -> str:
+    """Thống kê số lượng nhân viên theo phòng ban (dùng cho Bar/Pie chart)."""
+    employees = find_many("employees")
+    dept_counts: Counter[str] = Counter()
+    for emp in employees:
+        dept = emp.get("department_name") or emp.get("department_id") or "Unknown"
+        dept_counts[str(dept)] += 1
+    data = [{"label": k, "value": v} for k, v in dept_counts.most_common()]
+    return json.dumps({"chart": "employees_by_department", "description": "Số nhân viên theo phòng ban", "data": data}, ensure_ascii=False)
+
+@tool
+def chart_employees_by_gender() -> str:
+    """Thống kê số lượng nhân viên theo giới tính (Bar/Pie)."""
+    employees = find_many("employees")
+    gender_counts: Counter[str] = Counter()
+    for emp in employees:
+        gender = emp.get("gender") or "Khác"  # 'Nam', 'Nữ', ...
+        gender_counts[str(gender)] += 1
+    data = [{"label": k, "value": v} for k, v in gender_counts.most_common()]
+    return json.dumps({"chart": "employees_by_gender", "description": "Số nhân viên theo giới tính", "data": data}, ensure_ascii=False)
+
+@tool
+def chart_age_distribution(buckets: Optional[List[int]] = None) -> str:
+    """Phân bố độ tuổi nhân viên theo nhóm (Histogram). Tham số tùy chọn: buckets (danh sách mốc tuổi)."""
+    employees = find_many("employees")
+    ages: List[int] = []
+    for emp in employees:
+        val = emp.get("employee_age")
+        if isinstance(val, (int, float)):
+            ages.append(int(val))
+    if not ages:
+        return json.dumps({"chart": "age_distribution", "description": "Không có dữ liệu tuổi", "data": []}, ensure_ascii=False)
+    buckets = sorted(set(buckets)) if buckets else [20,25,30,35,40,45,50,55,60]
+    # Build ranges
+    ranges = []
+    prev = 0
+    for b in buckets:
+        ranges.append((prev, b))
+        prev = b
+    ranges.append((prev, 200))  # tail
+    counts = []
+    for start, end in ranges:
+        label = f"{start}-{end-1}" if end != 200 else f">= {start}"
+        c = 0
+        for a in ages:
+            if start <= a < end:
+                c += 1
+        if c > 0:
+            counts.append({"range": label, "count": c})
+    return json.dumps({"chart": "age_distribution", "description": "Phân bố độ tuổi", "data": counts}, ensure_ascii=False)
+
+@tool
+def chart_salary_by_department() -> str:
+    """Thống kê lương trung bình, min, max theo phòng ban (Bar chart với avg hoặc Box-like data)."""
+    employees = find_many("employees")
+    agg: Dict[str, List[float]] = defaultdict(list)
+    for emp in employees:
+        dept = emp.get("department_name") or emp.get("department_id") or "Unknown"
+        salary = emp.get("salary")
+        if isinstance(salary, (int, float)):
+            agg[str(dept)].append(float(salary))
+    data = []
+    for dept, vals in agg.items():
+        avg = sum(vals)/len(vals) if vals else 0
+        data.append({
+            "department": dept,
+            "avg_salary": round(avg,2),
+            "min_salary": min(vals),
+            "max_salary": max(vals),
+            "count": len(vals)
+        })
+    data.sort(key=lambda x: x["avg_salary"], reverse=True)
+    return json.dumps({"chart": "salary_by_department", "description": "Lương theo phòng ban", "data": data}, ensure_ascii=False)
+
+@tool
+def chart_avg_salary_by_experience() -> str:
+    """Lương trung bình theo số năm kinh nghiệm (Line/Bar)."""
+    employees = find_many("employees")
+    exp_map: Dict[int, List[float]] = defaultdict(list)
+    for emp in employees:
+        yrs = emp.get("years_of_experience")
+        sal = emp.get("salary")
+        if isinstance(yrs, (int, float)) and isinstance(sal, (int, float)):
+            exp_map[int(yrs)].append(float(sal))
+    data = []
+    for yrs, vals in sorted(exp_map.items(), key=lambda x: x[0]):
+        avg = sum(vals)/len(vals)
+        data.append({"years_of_experience": yrs, "avg_salary": round(avg,2), "count": len(vals)})
+    return json.dumps({"chart": "avg_salary_by_experience", "description": "Lương trung bình theo kinh nghiệm", "data": data}, ensure_ascii=False)
+
+@tool
+def chart_education_level_distribution() -> str:
+    """Phân bố trình độ học vấn (Bar/Pie)."""
+    employees = find_many("employees")
+    edu_counts: Counter[str] = Counter()
+    for emp in employees:
+        edu = emp.get("education_level") or "Khác"
+        edu_counts[str(edu)] += 1
+    data = [{"label": k, "value": v} for k, v in edu_counts.most_common()]
+    return json.dumps({"chart": "education_level_distribution", "description": "Phân bố trình độ học vấn", "data": data}, ensure_ascii=False)
+
+@tool
+def chart_headcount_by_hire_year() -> str:
+    """Xu hướng số lượng tuyển dụng theo năm (Line/Bar)."""
+    employees = find_many("employees")
+    year_counts: Counter[int] = Counter()
+    for emp in employees:
+        hire = emp.get("hire_date")
+        year = None
+        if isinstance(hire, datetime):
+            year = hire.year
+        elif isinstance(hire, str):
+            # thử định dạng DD-MM-YYYY
+            for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y"):
+                try:
+                    year = datetime.strptime(hire, fmt).year
+                    break
+                except Exception:
+                    continue
+        if year:
+            year_counts[year] += 1
+    data = [{"year": y, "count": year_counts[y]} for y in sorted(year_counts.keys())]
+    return json.dumps({"chart": "headcount_by_hire_year", "description": "Số nhân viên theo năm tuyển dụng", "data": data}, ensure_ascii=False)
+
+# Cập nhật lại danh sách ALL_TOOLS hợp nhất
 ALL_TOOLS = [
-    hospital_list,
     echo,
-    all_employees_with_departments_info,
+    all_employees,
     employees_by_department_names,
-    internet_search
+    ihos_doc_search,
+    internet_search,
+    chart_employees_by_department,
+    chart_employees_by_gender,
+    chart_age_distribution,
+    chart_salary_by_department,
+    chart_avg_salary_by_experience,
+    chart_education_level_distribution,
+    chart_headcount_by_hire_year,
 ]
 
 __all__ = [
-    "hospital_list", "echo",
-    "all_employees_with_departments_info", "employees_by_department_names", "ihos_doc_search",
-    "internet_search", "ALL_TOOLS"
+    "echo",
+    "all_employees", "employees_by_department_names", "ihos_doc_search",
+    "internet_search", "ALL_TOOLS",
+    "chart_employees_by_department",
+    "chart_employees_by_gender",
+    "chart_age_distribution",
+    "chart_salary_by_department",
+    "chart_avg_salary_by_experience",
+    "chart_education_level_distribution",
+    "chart_headcount_by_hire_year",
 ]
