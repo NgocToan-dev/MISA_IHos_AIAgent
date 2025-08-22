@@ -1,0 +1,98 @@
+############################
+# Python build artifacts
+############################
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.dll
+*.dylib
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+pip-wheel-metadata/
+*.manifest
+*.spec
+
+############################
+# Virtual environments
+############################
+venv/
+env/
+.venv/
+.env/
+ENV/
+env.bak/
+venv.bak/
+
+############################
+# Environment & secrets
+############################
+*.env
+.env.*
+!example.env
+
+############################
+# Caches & tooling
+############################
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.cache/
+pytestdebug.log
+
+############################
+# Notebooks
+############################
+.ipynb_checkpoints/
+
+############################
+# Editors / IDE
+############################
+.vscode/
+.idea/
+*.swp
+*.swo
+*.code-workspace
+
+############################
+# OS junk
+############################
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Icon?
+
+############################
+# Logs & temp
+############################
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+
+############################
+# Data (adjust keep patterns as needed)
+############################
+data/
+*.sqlite*
+
+############################
+# Node / frontend (if later added)
+############################
+node_modules/
+
+############################
+# Local overrides
+############################
+*.local
+*.override
+

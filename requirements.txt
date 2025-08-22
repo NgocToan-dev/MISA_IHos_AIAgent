@@ -1,0 +1,31 @@
+######## Base dependencies cho skeleton agent ########
+# Lưu ý: langgraph yêu cầu Python >= 3.11
+
+fastapi>=0.111,<0.112          # API layer
+uvicorn[standard]>=0.30,<0.31   # ASGI server
+langgraph>=0.6.0                # Orchestrate stateful agent (phiên bản mới theo context7)
+
+# Với ví dụ hiện tại ta không cần toàn bộ langchain lớn. Nếu muốn dùng components:
+langchain-core>=0.2.34          # Core abstractions
+langchain-community>=0.2.0      # (tuỳ chọn) loaders, tools community
+langchain-google-genai>=0.1.0   # Gemini integration (ChatGoogleGenerativeAI)
+
+pydantic>=2.7,<3                # Model validation
+python-dotenv>=1.0              # Load biến môi trường .env
+
+# Database
+pymongo>=4.7,<5                 # MongoDB driver
+
+######## Các gói tuỳ chọn (bỏ comment khi cần) ########
+langchain-openai>=0.1.0       # Tích hợp OpenAI
+# langchain-anthropic>=0.1.0    # Tích hợp Anthropic
+# langgraph-checkpoint-redis    # Persist checkpoint vào Redis
+# langgraph-checkpoint-postgres # Persist checkpoint vào Postgres
+# langgraph-sdk                 # Client SDK nếu gọi remote graph
+# langchain-tavily              # Search tool Tavily
+# tiktoken                      # Token counting (OpenAI)
+# chromadb                      # Vector storec
+
+######## Ghi chú ########
+# Nếu gặp xung đột version, có thể thử: pip install -U pip setuptools wheel
+# Trên Windows: đảm bảo có build tools (Visual C++ Build Tools) nếu cài gói có phần mở rộng native.
