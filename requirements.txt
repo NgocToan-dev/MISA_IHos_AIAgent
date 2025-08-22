@@ -15,6 +15,7 @@ python-dotenv>=1.0              # Load biến môi trường .env
 
 # Database
 pymongo>=4.7,<5                 # MongoDB driver
+pymilvus>=2.4.0,<3              # Milvus / Zilliz Cloud client
 
 ######## Các gói tuỳ chọn (bỏ comment khi cần) ########
 langchain-openai>=0.1.0       # Tích hợp OpenAI
