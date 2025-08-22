@@ -257,6 +257,113 @@ def chart_headcount_by_hire_year() -> str:
     data = [{"year": y, "count": year_counts[y]} for y in sorted(year_counts.keys())]
     return json.dumps({"chart": "headcount_by_hire_year", "description": "Số nhân viên theo năm tuyển dụng", "data": data}, ensure_ascii=False)
 
+@tool
+def available_meeting_rooms(time_start: str, time_end: str, booking_date: str) -> str:
+    """
+    Tìm kiếm phòng họp còn trống trong bệnh viện theo khoảng thời gian và ngày đặt.
+    Tham số:
+        time_start: thời gian bắt đầu (HH:MM)
+        time_end: thời gian kết thúc (HH:MM)
+        booking_date: ngày đặt phòng (DD-MM-YYYY)
+    Trả về JSON danh sách phòng họp còn trống.
+    """
+    rooms = find_many("meeting_rooms")
+    bookings = find_many(
+        "schedule_booking",
+        {
+            "booking_date": booking_date,
+            "$or": [
+                {"start_time": {"$lt": time_end, "$gte": time_start}},
+                {"end_time": {"$gt": time_start, "$lte": time_end}},
+                {"start_time": {"$lte": time_start}, "end_time": {"$gte": time_end}}
+            ]
+        }
+    )
+    booked_names = set(b["room_name"] for b in bookings)
+    available_rooms = [
+        {
+            "room_name": r.get("room_name"),
+            "room_code": r.get("room_code"),
+            "location": r.get("location"),
+            "capacity": r.get("capacity"),
+            "equipment_list": r.get("equipment_list"),
+            "is_available": r.get("is_available"),
+        }
+        for r in rooms
+        if r.get("is_available", True) and r.get("room_name") not in booked_names
+    ]
+    return json.dumps({"count": len(available_rooms), "items": available_rooms}, ensure_ascii=False)
+
+@tool
+def book_meeting_room(
+    employee_name: str,
+    room_name: str,
+    time_start: str,
+    time_end: str,
+    booking_date: str,
+    purpose: str = ""
+) -> str:
+    """
+    Đặt phòng họp trong bệnh viện.
+    Tham số:
+        employee_name: tên người đặt phòng
+        room_name: tên phòng họp
+        time_start: thời gian bắt đầu (HH:MM)
+        time_end: thời gian kết thúc (HH:MM)
+        booking_date: ngày đặt phòng (DD-MM-YYYY)
+        purpose: mục đích họp (tùy chọn)
+    Trả về kết quả đặt phòng (JSON).
+    """
+    rooms = find_many("meeting_rooms", {"room_name": room_name}, limit=1)
+    if not rooms:
+        return json.dumps({"success": False, "message": "Không tìm thấy phòng họp."}, ensure_ascii=False)
+    bookings = find_many(
+        "schedule_booking",
+        {
+            "room_name": room_name,
+            "booking_date": booking_date,
+            "$or": [
+                {"start_time": {"$lt": time_end, "$gte": time_start}},
+                {"end_time": {"$gt": time_start, "$lte": time_end}},
+                {"start_time": {"$lte": time_start}, "end_time": {"$gte": time_end}}
+            ]
+        }
+    )
+    if bookings:
+        return json.dumps({"success": False, "message": "Phòng đã bị đặt trong khoảng thời gian này."}, ensure_ascii=False)
+    booking_info = {
+        "employee_name": employee_name,
+        "room_name": room_name,
+        "booking_date": booking_date,
+        "start_time": time_start,
+        "end_time": time_end,
+        "purpose": purpose
+    }
+    from services.mongo.mongo_repo import insert_one
+    insert_one("schedule_booking", booking_info)
+    return json.dumps({"success": True, "message": "Đặt phòng thành công.", "booking": booking_info}, ensure_ascii=False)
+
+@tool
+def list_meeting_rooms() -> str:
+    """
+    Lấy danh sách thông tin các phòng họp của bệnh viện.
+    Trả về JSON gồm các trường: room_name, room_code, location, capacity, equipment_list, is_available, created_at.
+    """
+    rooms = find_many("meeting_rooms")
+    items = [
+        {
+            "room_name": r.get("room_name"),
+            "room_code": r.get("room_code"),
+            "location": r.get("location"),
+            "capacity": r.get("capacity"),
+            "equipment_list": r.get("equipment_list"),
+            "is_available": r.get("is_available"),
+            "created_at": r.get("created_at"),
+        }
+        for r in rooms
+    ]
+    return json.dumps({"count": len(items), "items": items}, ensure_ascii=False)
+
 # Cập nhật lại danh sách ALL_TOOLS hợp nhất
 ALL_TOOLS = [
     echo,
@@ -271,6 +378,9 @@ ALL_TOOLS = [
     chart_avg_salary_by_experience,
     chart_education_level_distribution,
     chart_headcount_by_hire_year,
+    available_meeting_rooms,
+    book_meeting_room,
+    list_meeting_rooms,
 ]
 
 __all__ = [
@@ -284,4 +394,7 @@ __all__ = [
     "chart_avg_salary_by_experience",
     "chart_education_level_distribution",
     "chart_headcount_by_hire_year",
+    "available_meeting_rooms",
+    "book_meeting_room",
+    "list_meeting_rooms",
 ]

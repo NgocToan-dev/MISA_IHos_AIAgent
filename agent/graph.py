@@ -198,5 +198,5 @@ def build_graph():  # noqa: D401 - giữ API cũ
     """Trả về compiled graph mặc định (singleton)."""
     global _DEFAULT_INSTANCE
     if _DEFAULT_INSTANCE is None:
-        _DEFAULT_INSTANCE = GeminiAgentGraph(system_prompt=IHOS_SYSTEM_PROMPT)
+        _DEFAULT_INSTANCE = GeminiAgentGraph(system_prompt=IHOS_SYSTEM_PROMPT.format(current_date=datetime.datetime.today()))
     return _DEFAULT_INSTANCE.build_graph()
