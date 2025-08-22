@@ -30,3 +30,10 @@ langchain-openai>=0.1.0       # Tích hợp OpenAI
 ######## Ghi chú ########
 # Nếu gặp xung đột version, có thể thử: pip install -U pip setuptools wheel
 # Trên Windows: đảm bảo có build tools (Visual C++ Build Tools) nếu cài gói có phần mở rộng native.
+
+# Cài thêm các tool search và community:
+duckduckgo-search
+langchain-community
+
+# Hoặc cài nhanh bằng lệnh:
+# pip install -qU duckduckgo-search langchain-
