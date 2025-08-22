@@ -169,6 +169,7 @@ class GeminiAgentGraph:
         graph.add_edge("tool", "finalize")
         graph.add_edge("finalize", END)
         self.compiled_graph = graph.compile()
+        
         return self.compiled_graph
 
 

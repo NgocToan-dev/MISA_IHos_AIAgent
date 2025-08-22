@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Chatbot</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+    <style>
+        .chat-container { height: calc(100vh - 180px); }
+        .message-animation { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn { from { opacity:0; transform:translateY(10px);} to { opacity:1; transform:translateY(0);} }
+    /* Custom scrollbar (optional) */
+    .chat-container::-webkit-scrollbar { width: 8px; }
+    .chat-container::-webkit-scrollbar-track { background: transparent; }
+    .chat-container::-webkit-scrollbar-thumb { background:#d1d5db; border-radius:4px; }
+    .chat-container::-webkit-scrollbar-thumb:hover { background:#9ca3af; }
+    </style>
+</head>
+<body class="bg-gray-100 flex flex-col min-h-screen">
+    <header class="bg-white/70 backdrop-blur border-b">
+        <div class="max-w-4xl mx-auto py-3 px-4">
+            <h1 class="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                <i class="fas fa-robot text-blue-500"></i>
+                Trợ lý AI
+                <span class="text-xs font-normal text-gray-400" id="session-label"></span>
+            </h1>
+        </div>
+    </header>
+    <main class="flex-1 overflow-hidden">
+        <div class="h-full flex flex-col max-w-4xl mx-auto px-4 py-4 gap-4">
+            <div class="chat-container overflow-y-auto p-5 space-y-5 bg-white rounded-2xl border border-gray-200 shadow-sm" id="chat-scroll">
+                <div id="typing-indicator" class="text-sm text-gray-400 hidden flex items-center gap-2"><span class="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span> Đang trả lời...</div>
+            </div>
+            <form id="chat-form" class="mt-0">
+                <div class="flex items-end gap-3">
+                    <div class="flex-1 relative group">
+                        <div class="absolute inset-0 rounded-2xl border border-gray-300 bg-white group-focus-within:border-blue-500 group-focus-within:ring-2 group-focus-within:ring-blue-200 transition"></div>
+                        <textarea id="message-input" rows="1" placeholder="Nhập tin nhắn..." class="relative w-full bg-transparent p-4 pr-14 resize-none rounded-2xl focus:outline-none text-sm" style="min-height:56px;max-height:160px;"></textarea>
+                        <button type="button" id="new-session" class="absolute top-2 right-2 text-gray-400 hover:text-blue-500 transition" title="Phiên mới">
+                            <i class="fas fa-broom"></i>
+                        </button>
+                    </div>
+                    <button type="submit" class="h-[56px] w-[56px] flex items-center justify-center bg-blue-500 text-white rounded-2xl hover:bg-blue-600 active:scale-95 transition shadow-sm focus:outline-none focus:ring-4 focus:ring-blue-200">
+                        <i class="fas fa-paper-plane text-lg"></i>
+                    </button>
+                </div>
+                <p class="mt-2 text-[11px] text-gray-400 text-center">Enter gửi • Shift+Enter xuống dòng • Giới hạn nhớ 6 lượt gần nhất</p>
+            </form>
+        </div>
+    </main>
+    <script src="/static/js/chat.js"></script>
+</body>
+</html>

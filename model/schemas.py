@@ -30,10 +30,12 @@ class AgentResponse(BaseModel):
     intermediate: List[str]
     trace: List[str]
     tool_results: Optional[List[ToolResult]] = None
+    session_id: Optional[str] = Field(None, description="ID phiên hội thoại để duy trì memory")
 
 
 class AgentRequest(BaseModel):
     query: str = Field(..., description="Câu hỏi / lệnh đầu vào")
+    session_id: Optional[str] = Field(None, description="ID phiên (client giữ và gửi lại để lưu ngữ cảnh)")
 
 
 __all__ = [
