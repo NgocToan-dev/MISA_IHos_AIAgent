@@ -8,6 +8,7 @@ import math, json
 from services.api.business_service import search_hospitals_by_keyword
 from services.mongo.mongo_repo import find_many
 from langchain_core.tools import tool
+from langchain_community.tools import DuckDuckGoSearchRun
 
 
 @tool
@@ -104,9 +105,28 @@ def employees_by_department_names(department_names: List[str]) -> str:
             })
     return json.dumps({"count": len(results), "items": results}, ensure_ascii=False)
 
-ALL_TOOLS = [calculator, hospital_list, echo, all_employees_with_departments_info, employees_by_department_names]
+duckduckgo_search = DuckDuckGoSearchRun()
+
+@tool
+def internet_search(query: str) -> str:
+    """
+    Tìm kiếm thông tin trên internet bằng DuckDuckGo.
+    Tham số: query (nội dung cần tìm kiếm).
+    Trả về kết quả tìm kiếm dạng văn bản.
+    """
+    return duckduckgo_search.invoke(query)
+
+ALL_TOOLS = [
+    calculator,
+    hospital_list,
+    echo,
+    all_employees_with_departments_info,
+    employees_by_department_names,
+    internet_search
+]
 
 __all__ = [
     "calculator", "hospital_list", "echo",
-    "all_employees_with_departments_info", "employees_by_department_names", "ALL_TOOLS"
+    "all_employees_with_departments_info", "employees_by_department_names",
+    "internet_search", "ALL_TOOLS"
 ]
