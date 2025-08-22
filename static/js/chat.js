@@ -54,7 +54,7 @@ document.addEventListener('DOMContentLoaded', function() {
       const intervalMs = 30;
       const charsPerTick = Math.max(1, Math.round(typingSpeedCPS * intervalMs / 1000));
 
-      function createAIContainer(){
+  function createAIContainer(){
         if (aiContainer) return;
         aiContainer = document.createElement('div');
         aiContainer.className = 'message-animation max-w-3xl mx-auto';
@@ -65,8 +65,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 <i class="fas fa-robot"></i>
               </div>
             </div>
-            <div class="bg-white p-4 rounded-lg shadow-sm">
-              <p class="text-gray-800 whitespace-pre-wrap" id="_sse_output" style="display:none"></p>
+            <div class="bg-white p-4 rounded-lg shadow-sm max-w-[70ch] overflow-x-auto">
+              <div class="text-gray-800 markdown-body" id="_sse_output" style="display:none"></div>
             </div>
           </div>`;
         chatContainer.insertBefore(aiContainer, typingIndicator);
@@ -80,6 +80,21 @@ document.addEventListener('DOMContentLoaded', function() {
             if (doneSignal){
               clearInterval(typingInterval);
               typingInterval = null;
+              // Final markdown cleanup: insert newlines before stray list asterisks
+              try {
+                if (outEl && outEl.dataset.raw){
+                  let raw = outEl.dataset.raw;
+                  // If colon directly followed by * bullet, add blank line
+                  raw = raw.replace(/:\*(?=\s)/g, ':\n\n*');
+                  // Replace occurrences of '* ' that are not already at line start with newline dash list
+                  raw = raw.replace(/([^\n])\*\s+/g, (m, p1) => p1 + '\n- ');
+                  // Convert leading '* ' lines to '- '
+                  raw = raw.replace(/^\*\s+/gm, '- ');
+                  outEl.dataset.raw = raw;
+                  const html = DOMPurify.sanitize(marked.parse(raw));
+                  outEl.innerHTML = html;
+                }
+              } catch(e){ /* ignore */ }
               typingIndicator.classList.add('hidden');
             }
             return;
@@ -88,7 +103,15 @@ document.addEventListener('DOMContentLoaded', function() {
           buffer = buffer.slice(chunk.length);
           if (outEl){
             if (outEl.style.display === 'none') outEl.style.display = 'block';
-            outEl.textContent += chunk;
+            // Append raw text then re-render markdown safely
+            outEl.dataset.raw = (outEl.dataset.raw || '') + chunk;
+            try {
+              const raw = outEl.dataset.raw;
+              const html = DOMPurify.sanitize(marked.parse(raw));
+              outEl.innerHTML = html;
+            } catch(e){
+              outEl.textContent += chunk; // fallback
+            }
           }
           chatContainer.scrollTop = chatContainer.scrollHeight;
         }, intervalMs);
@@ -107,7 +130,7 @@ document.addEventListener('DOMContentLoaded', function() {
         es.addEventListener('done', () => { es.close(); doneSignal = true; });
         es.onerror = function(){ es.close(); doneSignal = true; if (!receivedAny) fallbackFetch(null,false); };
       } else fallbackFetch(null,false);
-    } else fallbackFetch(null,false);
+  } else fallbackFetch(null,false);
 
   async function fallbackFetch(outEl, inline){
       try {
@@ -122,7 +145,11 @@ document.addEventListener('DOMContentLoaded', function() {
         } else {
           const data = await resp.json();
           const out = (data && (data.output || data.result || data.message)) ? (data.output || data.result || data.message) : JSON.stringify(data);
-          if (inline && outEl) outEl.textContent = out; else addMessage(out, 'ai', 'text');
+          if (inline && outEl){
+            outEl.style.display='block';
+            try { outEl.innerHTML = DOMPurify.sanitize(marked.parse(out)); }
+            catch(e){ outEl.textContent = out; }
+          } else addMessage(out, 'ai', 'markdown');
         }
       } catch(err){
         if (inline && outEl) outEl.textContent = 'Lỗi kết nối: ' + err.message; else addMessage('Lỗi kết nối: ' + err.message, 'ai', 'text');
@@ -131,7 +158,7 @@ document.addEventListener('DOMContentLoaded', function() {
         chatContainer.scrollTop = chatContainer.scrollHeight;
       }
     }
-  }
+  } // end sendMessage
 
   chatForm.addEventListener('submit', function(e) {
     e.preventDefault();
@@ -147,7 +174,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   });
 
-  function addMessage(content, sender) {
+  function addMessage(content, sender, type='text') {
     const messageDiv = document.createElement('div');
     messageDiv.className = 'message-animation max-w-3xl mx-auto';
 
@@ -164,6 +191,14 @@ document.addEventListener('DOMContentLoaded', function() {
           </div>
         </div>`;
     } else {
+      let innerHtml;
+      if (type === 'markdown') {
+        try {
+          innerHtml = DOMPurify.sanitize(marked.parse(content));
+        } catch(e){ innerHtml = content; }
+      } else {
+        innerHtml = content;
+      }
       messageDiv.innerHTML = `
         <div class="flex space-x-3">
           <div class="flex-shrink-0">
@@ -171,8 +206,8 @@ document.addEventListener('DOMContentLoaded', function() {
               <i class="fas fa-robot"></i>
             </div>
           </div>
-          <div class="bg-gray-100 p-3 rounded-lg shadow-sm max-w-[70%]">
-            <p class="text-gray-800">${content}</p>
+          <div class="bg-gray-100 p-3 rounded-lg shadow-sm max-w-[70%] overflow-x-auto">
+            <div class="text-gray-800 ${type==='markdown' ? 'markdown-body' : ''}">${innerHtml}</div>
           </div>
         </div>`;
     }

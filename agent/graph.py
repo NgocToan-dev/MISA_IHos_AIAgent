@@ -10,9 +10,10 @@ Refactor thành lớp `GeminiAgentGraph` để:
 
 Public API giữ nguyên hàm module-level `build_graph()` để không phá vỡ mã hiện tại.
 """
+
 from __future__ import annotations
 from langgraph.graph import StateGraph, END
-from typing import Callable, Optional, Any
+from typing import Any
 import os
 
 # Tích hợp Gemini qua langchain-google-genai
@@ -22,23 +23,14 @@ try:
 except ImportError:  # Chưa cài gói gemini
     ChatGoogleGenerativeAI = None  # type: ignore
     HumanMessage = None  # type: ignore
+from prompt.system_prompt import IHOS_SYSTEM_PROMPT
 from state.state import AgentState
 from tools.registry import ALL_TOOLS  # @tool based
+import datetime
 
 
 class GeminiAgentGraph:
-    """Đóng gói logic xây dựng và vận hành LangGraph agent.
-
-    Thuộc tính chính:
-        gemini_model_name: tên model Gemini (ví dụ: gemini-1.5-flash).
-        gemini_llm: instance ChatGoogleGenerativeAI hoặc None nếu không sẵn sàng.
-        compiled_graph: graph đã compile (cache). Dùng lazy compile.
-
-    Mở rộng trong tương lai:
-        - Thêm checkpoint (Redis/Postgres) -> lưu ở thuộc tính saver/store
-        - Thêm memory (short / long term)
-        - Thêm node động (subgraph, branch theo condition)
-    """
+    """Đóng gói logic xây dựng và vận hành LangGraph agent (Cách 1: dùng system_instruction)."""
 
     def __init__(
         self,
@@ -46,38 +38,58 @@ class GeminiAgentGraph:
         temperature: float = 0.0,
         enable_gemini: bool = True,
         tools: list | None = None,
+        system_prompt: str | None = None,
     ) -> None:
-        self.gemini_model_name = gemini_model_name or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        self.gemini_model_name = gemini_model_name or os.getenv(
+            "GEMINI_MODEL", "gemini-2.5-flash"
+        )
         self.temperature = temperature
         self.compiled_graph = None
         self.gemini_llm = None
         self.tools = tools if tools is not None else ALL_TOOLS
-        if enable_gemini and ChatGoogleGenerativeAI is not None and os.getenv("GOOGLE_API_KEY"):
-            try:
-                self.gemini_llm = ChatGoogleGenerativeAI(model=self.gemini_model_name, temperature=temperature)
+
+        current_date = "Hôm nay là ngày " + str(datetime.datetime.today())
+        default_prompt = (
+            "Bạn là trợ lý AI của nền tảng IHOS của công ty cổ phần MISA. "
+            "Nhiệm vụ: hiểu câu hỏi tiếng Việt, chọn đúng tool (ví dụ: ihos_doc_search khi cần tra cứu tài liệu), "
+            "trả lời súc tích, chính xác, giữ nguyên đơn vị đo, và cảnh báo khi thiếu dữ liệu. "
+            "Trả ra kết quả dạng markdown trực quan để người dùng nhìn."
+        )
+        self.system_prompt = system_prompt or default_prompt + f"\n{current_date}"
+
+        if (
+            enable_gemini
+            and ChatGoogleGenerativeAI is not None
+            and os.getenv("GOOGLE_API_KEY")
+        ):
+            try:  # pragma: no cover
+                self.gemini_llm = ChatGoogleGenerativeAI(
+                    model=self.gemini_model_name,
+                    temperature=temperature,
+                    system_instruction=self.system_prompt,
+                )
             except Exception:
                 self.gemini_llm = None
 
-    # ---------------- Node definitions ---------------- #
+    # ---------------- Nodes ---------------- #
     def router_node(self, state: AgentState) -> AgentState:
-        """Nếu có Gemini + tool calling: để LLM tự chọn, ngược lại fallback route cũ."""
+        """Dùng Gemini tool calling để chọn tool; fallback echo."""
         query = state.get("query", "")
         trace = state.setdefault("trace", [])
         if self.gemini_llm is not None and HumanMessage is not None:
             try:
                 llm_tools = self.gemini_llm.bind_tools(self.tools)
-                ai_msg = llm_tools.invoke([HumanMessage(content=query)])
+                msgs = [HumanMessage(content="Câu hỏi: " + query)]
+                ai_msg = llm_tools.invoke(msgs)
                 tool_calls = getattr(ai_msg, "tool_calls", []) or []
                 if tool_calls:
                     first = tool_calls[0]
                     tool_name = first.get("name")
                     args = first.get("args", {})
                     state["selected_tool"] = tool_name
-                    tool_args = state.get("tool_args")
-                    if tool_args is None:
-                        tool_args = {}
-                        state["tool_args"] = tool_args
+                    tool_args = state.get("tool_args") or {}
                     tool_args[tool_name] = args
+                    state["tool_args"] = tool_args
                     trace.append(f"LLM_TOOL_SELECT -> {tool_name} {args}")
                     return state
                 state["selected_tool"] = "echo"
@@ -92,41 +104,44 @@ class GeminiAgentGraph:
     def tool_node(self, state: AgentState) -> AgentState:
         tool_name = state.get("selected_tool")
         query = state.get("query", "")
-        tool_map = {t.name: t for t in self.tools}
-        if tool_name in tool_map and self.gemini_llm is not None:
+        # Map tool name -> tool object (dùng getattr fallback để tránh lỗi static typing)
+        tool_map: dict[str, Any] = {
+            getattr(t, "name", getattr(t, "__name__", f"tool_{i}")): t
+            for i, t in enumerate(self.tools)
+        }
+        if tool_name in tool_map:
             args_map = state.get("tool_args", {}).get(tool_name, {}) or {}
-            # Auto-fill missing required single argument with query
-            if tool_name in tool_map:
-                tool_obj = tool_map[tool_name]
+            # Auto-fill: nếu tool chưa có args và chỉ có 1 param -> dùng query
+            if not args_map:
                 try:
-                    schema = getattr(tool_obj, "args_schema", None)
-                    if schema is not None:
-                        fields = getattr(schema, "model_fields", {})
-                        required = [k for k, f in fields.items() if getattr(f, "is_required", False)]
-                        if not required:
-                            required = [k for k, f in fields.items() if getattr(f, "default", object()) is ...]
-                        if (not args_map) and len(required) == 1:
-                            args_map = {required[0]: query}
-                        elif not args_map:
-                            name_map = {"echo": "text", "calculator": "expression", "hospital_list": "keyword"}
-                            param_name = name_map.get(tool_name or "")
-                            if param_name:
-                                args_map = {param_name: query}
+                    schema = getattr(tool_map[tool_name], "args", None)
+                    if schema and len(schema) == 1:
+                        sole = list(schema.keys())[0]
+                        args_map = {sole: query}
                 except Exception:  # pragma: no cover
                     pass
-            # Persist back
+            if not args_map:
+                # fallback theo tên phổ biến
+                name_map = {"echo": "text", "internet_search": "query"}
+                param = name_map.get(tool_name or "")
+                if param:
+                    args_map = {param: query}
+            # persist
             if args_map:
                 tool_args_all = state.get("tool_args") or {}
                 tool_args_all[tool_name] = args_map
                 state["tool_args"] = tool_args_all
+            tool_obj = tool_map[tool_name]
             try:
-                result = tool_map[tool_name].invoke(args_map)
+                # LangChain tool object có .invoke; nếu không thì gọi như hàm thường
+                if hasattr(tool_obj, "invoke"):
+                    result = tool_obj.invoke(args_map)  # type: ignore[attr-defined]
+                else:
+                    result = tool_obj(**args_map)  # type: ignore[misc]
             except Exception as e:  # pragma: no cover
                 result = f"ToolError: {e}"
-        elif tool_name == "echo":
-            result = f"ECHO: {query}"
         else:
-            result = f"Unknown tool: {tool_name}"
+            result = f"ECHO: {query}" if tool_name == "echo" else f"Unknown tool: {tool_name}"
         interm = state.setdefault("intermediate", [])
         interm.append(result)
         trace = state.setdefault("trace", [])
@@ -141,13 +156,15 @@ class GeminiAgentGraph:
         if self.gemini_llm is not None and HumanMessage is not None:
             try:
                 prompt = (
-                    "Bạn là trợ lý. Người dùng hỏi: '" + query + "'.\n"
-                    "Kết quả trung gian/tool: '" + base_output + "'.\n"
-                    "Hãy trả lời ngắn gọn và rõ ràng bằng tiếng Việt."
+                    "Người dùng hỏi: "
+                    + query
+                    + "\nKết quả trung gian/tool: "
+                    + base_output
+                    + "\nHãy tổng hợp và trả lời ngắn gọn bằng tiếng Việt, giữ nguyên thuật ngữ chuyên môn khi cần."
                 )
                 msg = self.gemini_llm.invoke([HumanMessage(content=prompt)])
                 enhanced = getattr(msg, "content", base_output)
-            except Exception as e:  # pragma: no cover - fallback
+            except Exception as e:  # pragma: no cover
                 trace = state.setdefault("trace", [])
                 trace.append(f"GEMINI_FALLBACK: {e}")
                 enhanced = base_output
@@ -169,7 +186,7 @@ class GeminiAgentGraph:
         graph.add_edge("tool", "finalize")
         graph.add_edge("finalize", END)
         self.compiled_graph = graph.compile()
-        
+
         return self.compiled_graph
 
 
@@ -181,5 +198,5 @@ def build_graph():  # noqa: D401 - giữ API cũ
     """Trả về compiled graph mặc định (singleton)."""
     global _DEFAULT_INSTANCE
     if _DEFAULT_INSTANCE is None:
-        _DEFAULT_INSTANCE = GeminiAgentGraph()
+        _DEFAULT_INSTANCE = GeminiAgentGraph(system_prompt=IHOS_SYSTEM_PROMPT)
     return _DEFAULT_INSTANCE.build_graph()
