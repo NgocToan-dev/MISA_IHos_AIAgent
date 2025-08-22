@@ -338,4 +338,129 @@ __all__ = [
     "index_hospital",
     "index_hospitals",
     "search_text",
+    # text chunk helpers
+    "ensure_text_collection",
+    "index_text_file",
 ]
+
+
+# --------------------- TEXT CHUNK INGESTION ---------------------
+def ensure_text_collection(
+    name: Optional[str] = None,
+    dim: int = 768,
+    description: str = "Generic text chunk collection",
+    force: bool = False,
+) -> str:
+    """Đảm bảo tồn tại collection để lưu text chunks.
+
+    Schema:
+      - id (auto, primary)
+      - doc_id (VARCHAR)
+      - chunk_index (INT64)
+      - text (VARCHAR large)
+      - embedding (FLOAT_VECTOR)
+    """
+    client = get_client()
+    coll_name = name or os.getenv("MILVUS_TEXT_COLLECTION", "ihos_documents")
+    exists = client.has_collection(coll_name)  # type: ignore[attr-defined]
+    if exists and force:
+        try:
+            client.drop_collection(coll_name)
+            exists = False
+        except Exception:
+            pass
+    if exists:
+        return coll_name
+    from pymilvus import FieldSchema, DataType, CollectionSchema  # type: ignore
+
+    fields = [
+        FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
+        FieldSchema(name="doc_id", dtype=DataType.VARCHAR, max_length=128),
+        FieldSchema(name="chunk_index", dtype=DataType.INT64),
+        FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=8192),
+        FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim),
+    ]
+    schema = CollectionSchema(fields=fields, description=description, enable_dynamic_field=True)
+    client.create_collection(collection_name=coll_name, schema=schema)
+    return coll_name
+
+
+def _split_text(
+    text: str,
+    chunk_size: int = 800,
+    overlap: int = 100,
+) -> list[str]:
+    """Tách văn bản dài thành các chunk theo số "từ" (word) gần giống token.
+
+    overlap: số từ cuối của chunk trước sẽ được lặp lại ở chunk sau để giữ ngữ cảnh.
+    """
+    if chunk_size <= 0:
+        chunk_size = 800
+    if overlap < 0:
+        overlap = 0
+    words = text.split()
+    if not words:
+        return []
+    chunks: list[str] = []
+    start = 0
+    n = len(words)
+    while start < n:
+        end = min(start + chunk_size, n)
+        chunk_words = words[start:end]
+        if chunk_words:
+            chunks.append(" ".join(chunk_words))
+        if end == n:
+            break
+        # next start with overlap
+        start = end - overlap if overlap > 0 else end
+        if start < 0:
+            start = 0
+    return chunks
+
+
+def index_text_file(
+    doc_id: str,
+    text: str,
+    chunk_size: int = 800,
+    overlap: int = 100,
+    collection: Optional[str] = None,
+) -> dict[str, Any]:
+    """Chunk + embed toàn bộ text và insert vào Milvus.
+
+    Trả về dict gồm doc_id, collection, chunk_count, inserted_ids.
+    """
+    raw_chunks = _split_text(text, chunk_size=chunk_size, overlap=overlap)
+    if not raw_chunks:
+        return {"doc_id": doc_id, "collection": collection or os.getenv("MILVUS_TEXT_COLLECTION", "ihos_documents"), "chunk_count": 0, "inserted_ids": []}
+    from services.embedding.gemini_embedder import get_embeddings  # local import tránh vòng lặp
+
+    embeddings = get_embeddings(raw_chunks)
+    if not embeddings or len(embeddings) != len(raw_chunks):
+        raise RuntimeError("Embedding lỗi: số vector không khớp số chunk")
+    dim = len(embeddings[0])
+    coll_name = ensure_text_collection(name=collection, dim=dim)
+    # build records
+    records = []
+    for idx, (chunk, emb) in enumerate(zip(raw_chunks, embeddings)):
+        records.append({
+            "doc_id": doc_id,
+            "chunk_index": idx,
+            "text": chunk,
+            "embedding": emb,
+        })
+    ids = insert_embeddings(records, collection=coll_name)
+    # tạo index (idempotent) & load
+    try:
+        create_index(collection=coll_name)
+    except Exception:
+        pass
+    try:
+        load_collection(collection=coll_name)
+    except Exception:
+        pass
+    return {
+        "doc_id": doc_id,
+        "collection": coll_name,
+        "chunk_count": len(records),
+        "inserted_ids": ids,
+    }

@@ -3,22 +3,18 @@
 Lưu ý: Tool arguments nên đơn giản (kiểu nguyên thủy) để model dễ sinh.
 """
 from __future__ import annotations
-from typing import List, Dict
-import math, json
+from typing import List, Dict, Optional
+import json
 from services.api.business_service import search_hospitals_by_keyword
 from services.mongo.mongo_repo import find_many
 from langchain_core.tools import tool
-
-
-@tool
-def calculator(expression: str) -> str:
-    """Tính toán biểu thức toán học Python cơ bản (hàm math, + - * / **). Tham số: expression."""
-    allowed = {k: getattr(math, k) for k in dir(math) if not k.startswith('_')}
-    code = compile(expression, '<calc>', 'eval')
-    for name in code.co_names:
-        if name not in allowed:
-            raise ValueError(f"Tên không hợp lệ: {name}")
-    return str(eval(code, {"__builtins__": {}}, allowed))
+from services.milvus.milvus_repo import (
+    compute_embedding,
+    search_embeddings,
+    load_collection,
+    create_index,
+)
+import os
 
 
 def _serialize_hospital(h) -> Dict[str, str]:
@@ -104,9 +100,45 @@ def employees_by_department_names(department_names: List[str]) -> str:
             })
     return json.dumps({"count": len(results), "items": results}, ensure_ascii=False)
 
-ALL_TOOLS = [calculator, hospital_list, echo, all_employees_with_departments_info, employees_by_department_names]
+
+@tool
+def ihos_doc_search(query: str, collection: Optional[str] = None) -> str:
+    """Tìm kiếm semantic các đoạn văn bản phù hợp nhất (top 3) trong Milvus (ihos_documents).
+    Tham số: query (câu hỏi). Trả JSON gồm: query, matches (danh sách tối đa 3), và best_match (phần tử đầu để tương thích cũ).
+    Mỗi phần tử: {doc_id, chunk_index, score, text_truncated}.
+    """
+    coll = collection or os.getenv("MILVUS_TEXT_COLLECTION", "ihos_documents")
+    try:
+        # bảo đảm collection load
+        try:
+            load_collection(collection=coll)
+        except Exception:
+            try:
+                create_index(collection=coll)
+                load_collection(collection=coll)
+            except Exception:
+                pass
+        emb = compute_embedding(query)
+        hits = search_embeddings(emb, k=3, collection=coll, output_fields=["doc_id", "text", "chunk_index"])
+        if not hits:
+            return json.dumps({"query": query, "matches": [], "best_match": None, "message": "Không tìm thấy tài liệu phù hợp"}, ensure_ascii=False)
+        matches = []
+        for h in hits:
+            full_text = h.get("text") or ""
+            truncated = full_text[:500] + ("..." if len(full_text) > 500 else "")
+            matches.append({
+                "doc_id": h.get("doc_id"),
+                "chunk_index": h.get("chunk_index"),
+                "score": h.get("distance"),
+                "text_truncated": truncated,
+            })
+        return json.dumps({"query": query, "matches": matches, "best_match": matches[0]}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": f"MilvusSearchError: {e}"}, ensure_ascii=False)
+
+ALL_TOOLS = [hospital_list, echo, all_employees_with_departments_info, employees_by_department_names, ihos_doc_search]
 
 __all__ = [
-    "calculator", "hospital_list", "echo",
-    "all_employees_with_departments_info", "employees_by_department_names", "ALL_TOOLS"
+    "hospital_list", "echo",
+    "all_employees_with_departments_info", "employees_by_department_names", "ihos_doc_search", "ALL_TOOLS"
 ]

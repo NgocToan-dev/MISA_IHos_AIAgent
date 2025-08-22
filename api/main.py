@@ -3,7 +3,7 @@
 Endpoint: POST /invoke {"query": "..."}
 """
 from __future__ import annotations
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
 from pathlib import Path
@@ -11,7 +11,9 @@ from pydantic import BaseModel
 from inference.run import invoke_agent, stream_agent
 from model.schemas import AgentRequest, AgentResponse
 from services.mongo.mongo_repo import insert_many
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+import uuid
+from services.milvus.milvus_repo import index_text_file
 
 app = FastAPI(title="LangGraph Base Agent", version="0.1.0")
 
@@ -62,6 +64,59 @@ def mongo_insert_many(req: InsertManyRequest):
     print(f"Insert {len(req.documents)} documents")
     ids = insert_many(req.col, req.documents)
     return InsertManyResponse(inserted_ids=ids)
+
+
+class UploadTextResponse(BaseModel):
+    doc_id: str
+    collection: str
+    chunk_count: int
+    inserted_ids: List[int]
+
+
+@app.post("/upload_text", response_model=UploadTextResponse)
+async def upload_text(
+    file: UploadFile = File(..., description="File .txt chứa văn bản dài"),
+    doc_id: Optional[str] = Form(None),
+    chunk_size: int = Form(800),
+    overlap: int = Form(100),
+    collection: Optional[str] = Form(None),
+):
+    """Nhận 1 file txt, tách chunk, embed và lưu vào Milvus.
+
+    Trả về doc_id + thông tin số chunk.
+    """
+    if not file.filename or not file.filename.lower().endswith(".txt"):
+        raise HTTPException(status_code=400, detail="Chỉ hỗ trợ file .txt")
+    try:
+        content_bytes = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Không đọc được file: {e}")
+    try:
+        text = content_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            text = content_bytes.decode("utf-16")
+        except Exception:
+            text = content_bytes.decode(errors="ignore")
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="File rỗng")
+    the_doc_id = doc_id or str(uuid.uuid4())
+    try:
+        result = index_text_file(
+            doc_id=the_doc_id,
+            text=text,
+            chunk_size=chunk_size,
+            overlap=overlap,
+            collection=collection,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Index lỗi: {e}")
+    return UploadTextResponse(
+        doc_id=result["doc_id"],
+        collection=result["collection"],
+        chunk_count=result["chunk_count"],
+        inserted_ids=result.get("inserted_ids", []),
+    )
 
 
 @app.get("/", include_in_schema=False)

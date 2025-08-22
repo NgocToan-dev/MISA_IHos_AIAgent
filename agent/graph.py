@@ -10,6 +10,7 @@ Refactor thành lớp `GeminiAgentGraph` để:
 
 Public API giữ nguyên hàm module-level `build_graph()` để không phá vỡ mã hiện tại.
 """
+
 from __future__ import annotations
 from langgraph.graph import StateGraph, END
 from typing import Callable, Optional, Any
@@ -24,6 +25,7 @@ except ImportError:  # Chưa cài gói gemini
     HumanMessage = None  # type: ignore
 from state.state import AgentState
 from tools.registry import ALL_TOOLS  # @tool based
+import datetime
 
 
 class GeminiAgentGraph:
@@ -47,16 +49,33 @@ class GeminiAgentGraph:
         enable_gemini: bool = True,
         tools: list | None = None,
     ) -> None:
-        self.gemini_model_name = gemini_model_name or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        self.gemini_model_name = gemini_model_name or os.getenv(
+            "GEMINI_MODEL", "gemini-2.5-flash"
+        )
         self.temperature = temperature
         self.compiled_graph = None
         self.gemini_llm = None
         self.tools = tools if tools is not None else ALL_TOOLS
-        if enable_gemini and ChatGoogleGenerativeAI is not None and os.getenv("GOOGLE_API_KEY"):
+        if (
+            enable_gemini
+            and ChatGoogleGenerativeAI is not None
+            and os.getenv("GOOGLE_API_KEY")
+        ):
             try:
-                self.gemini_llm = ChatGoogleGenerativeAI(model=self.gemini_model_name, temperature=temperature)
+                self.gemini_llm = ChatGoogleGenerativeAI(
+                    model=self.gemini_model_name, temperature=temperature
+                )
             except Exception:
                 self.gemini_llm = None
+        # System prompt (context) cung cấp thêm chỉ dẫn cho model, lấy từ env hoặc mặc định.
+        current_date = "Hôm nay là ngày " + str(datetime.datetime.today())
+        self.system_prompt = f"""
+            {current_date}
+            "Bạn là trợ lý AI của nền tảng IHOS của công ty cổ phần MISA. Nhiệm vụ: hiểu câu hỏi tiếng Việt,"
+            " chọn đúng tool (ví dụ: ihos_doc_search khi cần tra cứu tài liệu),"
+            " trả lời súc tích, chính xác, giữ nguyên đơn vị đo, và cảnh báo khi thiếu dữ liệu."
+            "Trả ra kết quả dạng markdown trực quan để người dùng nhìn."
+        """
 
     # ---------------- Node definitions ---------------- #
     def router_node(self, state: AgentState) -> AgentState:
@@ -66,7 +85,11 @@ class GeminiAgentGraph:
         if self.gemini_llm is not None and HumanMessage is not None:
             try:
                 llm_tools = self.gemini_llm.bind_tools(self.tools)
-                ai_msg = llm_tools.invoke([HumanMessage(content=query)])
+                # prepend system prompt
+                msgs = [
+                    HumanMessage(content=self.system_prompt + "\n\nCâu hỏi: " + query)
+                ]
+                ai_msg = llm_tools.invoke(msgs)
                 tool_calls = getattr(ai_msg, "tool_calls", []) or []
                 if tool_calls:
                     first = tool_calls[0]
@@ -102,13 +125,21 @@ class GeminiAgentGraph:
                     schema = getattr(tool_obj, "args_schema", None)
                     if schema is not None:
                         fields = getattr(schema, "model_fields", {})
-                        required = [k for k, f in fields.items() if getattr(f, "is_required", False)]
+                        required = [
+                            k
+                            for k, f in fields.items()
+                            if getattr(f, "is_required", False)
+                        ]
                         if not required:
-                            required = [k for k, f in fields.items() if getattr(f, "default", object()) is ...]
+                            required = [
+                                k
+                                for k, f in fields.items()
+                                if getattr(f, "default", object()) is ...
+                            ]
                         if (not args_map) and len(required) == 1:
                             args_map = {required[0]: query}
                         elif not args_map:
-                            name_map = {"echo": "text", "calculator": "expression", "hospital_list": "keyword"}
+                            name_map = {"echo": "text", "hospital_list": "keyword"}
                             param_name = name_map.get(tool_name or "")
                             if param_name:
                                 args_map = {param_name: query}
@@ -141,9 +172,12 @@ class GeminiAgentGraph:
         if self.gemini_llm is not None and HumanMessage is not None:
             try:
                 prompt = (
-                    "Bạn là trợ lý. Người dùng hỏi: '" + query + "'.\n"
-                    "Kết quả trung gian/tool: '" + base_output + "'.\n"
-                    "Hãy trả lời ngắn gọn và rõ ràng bằng tiếng Việt."
+                    self.system_prompt
+                    + "\n---\nNgười dùng hỏi: "
+                    + query
+                    + "\nKết quả trung gian/tool: "
+                    + base_output
+                    + "\nHãy tổng hợp và trả lời ngắn gọn bằng tiếng Việt, giữ nguyên thuật ngữ chuyên môn khi cần."
                 )
                 msg = self.gemini_llm.invoke([HumanMessage(content=prompt)])
                 enhanced = getattr(msg, "content", base_output)
@@ -169,7 +203,7 @@ class GeminiAgentGraph:
         graph.add_edge("tool", "finalize")
         graph.add_edge("finalize", END)
         self.compiled_graph = graph.compile()
-        
+
         return self.compiled_graph
 
 
