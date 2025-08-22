@@ -150,7 +150,6 @@ def internet_search(query: str) -> str:
     return duckduckgo_search.invoke(query)
 
 ALL_TOOLS = [
-    calculator,
     hospital_list,
     echo,
     all_employees_with_departments_info,
