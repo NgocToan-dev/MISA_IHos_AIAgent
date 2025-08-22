@@ -2,6 +2,8 @@ document.addEventListener('DOMContentLoaded', function() {
   const chatForm = document.getElementById('chat-form');
   const messageInput = document.getElementById('message-input');
   const newSessionBtn = document.getElementById('new-session');
+  const loadHistoryBtn = document.getElementById('load-history');
+  const clearHistoryBtn = document.getElementById('clear-history');
   const sessionLabel = document.getElementById('session-label');
   const typingIndicator = document.getElementById('typing-indicator');
   const chatContainer = document.querySelector('.chat-container');
@@ -19,8 +21,22 @@ document.addEventListener('DOMContentLoaded', function() {
       localStorage.setItem('chat_session_id', sessionId);
       // Clear UI messages
       [...chatContainer.querySelectorAll('.message-animation')].forEach(n=>n.remove());
+    // Also clear server-side history for this session id (best-effort)
+    fetch('/history/' + encodeURIComponent(sessionId), { method: 'DELETE' }).catch(()=>{});
       renderSession();
       addSystem('Bắt đầu phiên mới');
+    });
+  }
+
+  if(loadHistoryBtn){
+    loadHistoryBtn.addEventListener('click', ()=>{ loadHistory(); });
+  }
+  if(clearHistoryBtn){
+    clearHistoryBtn.addEventListener('click', async ()=>{
+      try{ await fetch('/history/' + encodeURIComponent(sessionId), { method: 'DELETE' });
+        [...chatContainer.querySelectorAll('.message-animation')].forEach(n=>n.remove());
+        addSystem('Lịch sử đã được xóa');
+      }catch(e){ addSystem('Không thể xóa lịch sử'); }
     });
   }
 
@@ -50,8 +66,10 @@ document.addEventListener('DOMContentLoaded', function() {
       let buffer = '';
       let typingInterval = null;
       let doneSignal = false;
-      const typingSpeedCPS = 35;
-      const intervalMs = 30;
+  // Typing animation speed (characters per second) and tick interval (ms).
+  // Increase typingSpeedCPS and reduce intervalMs to make output appear faster.
+  const typingSpeedCPS = 200; // characters per second (was 35)
+  const intervalMs = 20; // ms per tick (was 30)
       const charsPerTick = Math.max(1, Math.round(typingSpeedCPS * intervalMs / 1000));
 
   function createAIContainer(){
@@ -160,6 +178,26 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   } // end sendMessage
 
+    // Load history from server for current session and render
+    async function loadHistory(){
+      try{
+        const resp = await fetch('/history/' + encodeURIComponent(sessionId) + '?limit=50');
+        if(!resp.ok) return;
+        const data = await resp.json();
+        const msgs = data.messages || [];
+        // Clear current messages (except typing indicator)
+    [...chatContainer.querySelectorAll('.message-animation')].forEach(n=>n.remove());
+    // Show count in session label
+    if(sessionLabel) sessionLabel.textContent = `#${sessionId.slice(-4)} • ${msgs.length} messages`;
+        for(const m of msgs){
+          if(m.role === 'user') addMessage(m.content, 'user');
+          else addMessage(m.content, 'ai', 'markdown');
+        }
+      }catch(e){ /* ignore */ }
+    }
+
+    // Load on start
+    loadHistory();
   chatForm.addEventListener('submit', function(e) {
     e.preventDefault();
     const message = messageInput.value.trim();

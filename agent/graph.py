@@ -14,6 +14,7 @@ Public API giữ nguyên hàm module-level `build_graph()` để không phá v�
 from __future__ import annotations
 from langgraph.graph import StateGraph, END
 from typing import Any
+import json
 import os
 
 # Tích hợp Gemini qua langchain-google-genai
@@ -72,6 +73,94 @@ class GeminiAgentGraph:
                 self.gemini_llm = None
 
     # ---------------- Nodes ---------------- #
+    def llm_structured_node(self, state: AgentState) -> AgentState:
+        """
+        Use Gemini's structured output API when available to extract a tool call for booking.
+        Expected structured output: {"tool_name": "book_meeting_room", "args": { ... }}
+        On success this sets state['selected_tool'] and state['tool_args'][tool_name] and
+        returns the updated state. On failure it falls back to router_node.
+        """
+        query = state.get("query", "")
+        trace = state.setdefault("trace", [])
+        if not (self.gemini_llm and HumanMessage is not None):
+            trace.append("LLM_STRUCTURED_NOT_AVAILABLE -> fallback router")
+            return self.router_node(state)
+
+        prompt = (
+            "Người dùng muốn ĐẶT PHÒNG. Hãy phân tích câu hỏi dưới đây và trả về "
+            "một JSON duy nhất có 2 trường: 'tool_name' (ví dụ: book_meeting_room) "
+            "và 'args' (object với các tham số). Trả chỉ JSON, không giải thích thêm.\n\n"
+            f"Câu hỏi: {query}"
+        )
+        try:
+            # Prefer structured API if available
+            if hasattr(self.gemini_llm, "with_structured_output"):
+                try:
+                    structured_llm = self.gemini_llm.with_structured_output(output_schema=dict)
+                    msg = structured_llm.invoke([HumanMessage(content=prompt)])
+                    structured = getattr(msg, "structured_output", None) or getattr(msg, "output", None)
+                    if structured is None:
+                        content = getattr(msg, "content", None)
+                        if isinstance(content, str):
+                            try:
+                                structured = json.loads(content)
+                            except Exception:
+                                structured = None
+                    if isinstance(structured, str):
+                        try:
+                            structured = json.loads(structured)
+                        except Exception:
+                            structured = None
+                    if isinstance(structured, dict):
+                        tool_name = structured.get("tool_name")
+                        args = structured.get("args", {}) or {}
+                        if tool_name:
+                            tool_args = state.get("tool_args") or {}
+                            tool_args[tool_name] = args
+                            state["tool_args"] = tool_args
+                            state["selected_tool"] = tool_name
+                            trace.append(f"LLM_STRUCTURED -> {tool_name} {args}")
+                            return state
+                except Exception as e:
+                    trace.append(f"LLM_STRUCTURED_ERROR: {e}")
+
+            # Fallback: plain invoke and try to parse JSON content
+            llm_tools = self.gemini_llm.bind_tools(self.tools)
+            msg = llm_tools.invoke([HumanMessage(content=prompt)])
+            content = getattr(msg, "content", None)
+            if isinstance(content, str):
+                try:
+                    parsed = json.loads(content)
+                    if isinstance(parsed, dict):
+                        tool_name = parsed.get("tool_name")
+                        args = parsed.get("args", {}) or {}
+                        if tool_name:
+                            tool_args = state.get("tool_args") or {}
+                            tool_args[tool_name] = args
+                            state["tool_args"] = tool_args
+                            state["selected_tool"] = tool_name
+                            trace.append(f"LLM_STRUCTURED_FALLBACK -> {tool_name} {args}")
+                            return state
+                except Exception:
+                    pass
+        except Exception as e:
+            trace.append(f"LLM_STRUCTURED_FATAL: {e}")
+
+        trace.append("LLM_STRUCTURED_NO_RESULT -> fallback router")
+        return self.router_node(state)
+
+    def dispatch_node(self, state: AgentState) -> AgentState:
+        """
+        Dispatch/condition node: if query indicates booking intent, route to
+        `llm_structured_node` to force structured LLM parsing; otherwise use
+        `router_node` for general tool routing.
+        """
+        query = (state.get("query") or "").lower()
+        booking_triggers = ["đặt phòng", "đặt cho tôi", "đặt phòng giúp", "đặt hộ phòng", "đặt cuộc họp", "đoặt"]
+        if any(tok in query for tok in booking_triggers):
+            return self.llm_structured_node(state)
+        return self.router_node(state)
+
     def router_node(self, state: AgentState) -> AgentState:
         """Dùng Gemini tool calling để chọn tool; fallback echo."""
         query = state.get("query", "")
@@ -177,11 +266,17 @@ class GeminiAgentGraph:
     def build_graph(self):
         if self.compiled_graph is not None:
             return self.compiled_graph
+
         graph = StateGraph(AgentState)
+        graph.add_node("dispatch", self.dispatch_node)
         graph.add_node("router", self.router_node)
         graph.add_node("tool", self.tool_node)
         graph.add_node("finalize", self.finalize_node)
-        graph.set_entry_point("router")
+        # Entry point is dispatch which will route to router or llm_structured_node
+        graph.set_entry_point("dispatch")
+        # dispatch (which may call llm_structured_node or router_node) then goes to tool
+        graph.add_edge("dispatch", "tool")
+        # keep router -> tool for backwards compatibility when router is used directly
         graph.add_edge("router", "tool")
         graph.add_edge("tool", "finalize")
         graph.add_edge("finalize", END)
@@ -198,5 +293,12 @@ def build_graph():  # noqa: D401 - giữ API cũ
     """Trả về compiled graph mặc định (singleton)."""
     global _DEFAULT_INSTANCE
     if _DEFAULT_INSTANCE is None:
-        _DEFAULT_INSTANCE = GeminiAgentGraph(system_prompt=IHOS_SYSTEM_PROMPT.format(current_date=datetime.datetime.today()))
+        # IHOS_SYSTEM_PROMPT may contain braces/placeholders that cause str.format() to raise
+        # KeyError if keys are missing. Try to format with current_date, but fall back to
+        # the raw prompt if formatting fails.
+        try:
+            system_prompt = IHOS_SYSTEM_PROMPT.format(current_date=datetime.datetime.today())
+        except Exception:
+            system_prompt = IHOS_SYSTEM_PROMPT
+        _DEFAULT_INSTANCE = GeminiAgentGraph(system_prompt=system_prompt)
     return _DEFAULT_INSTANCE.build_graph()

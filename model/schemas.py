@@ -38,9 +38,20 @@ class AgentRequest(BaseModel):
     session_id: Optional[str] = Field(None, description="ID phiên (client giữ và gửi lại để lưu ngữ cảnh)")
 
 
+class Room(BaseModel):
+    id: str
+    employee_name: str
+    room_name: str
+    time_start: str
+    time_end: str
+    booking_date: str
+    purpose: str = ""
+
+
 __all__ = [
     "Hospital",
     "ToolResult",
+    "Room",
     "AgentResponse",
     "AgentRequest",
 ]

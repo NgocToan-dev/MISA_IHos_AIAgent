@@ -14,11 +14,11 @@ from services.mongo.mongo_repo import insert_many
 from typing import List, Dict, Any, Optional
 import uuid
 from services.milvus.milvus_repo import index_text_file
+from services.api.conversation_service import get_history, append_messages, clear_history
 
 app = FastAPI(title="LangGraph Base Agent", version="0.1.0")
 
-# In-memory conversation memory: session_id -> list of (role, content)
-CONVERSATIONS: dict[str, list[dict[str, str]]] = {}
+# Conversation storage is persisted in Mongo via services/api/conversation_service
 
 # Mount static directory (js, css, images)
 static_dir = Path(__file__).resolve().parent.parent / "static"
@@ -31,15 +31,21 @@ def invoke(req: AgentRequest):
     if not req.query.strip():
         raise HTTPException(status_code=400, detail="query rỗng")
     session_id = req.session_id or "default"
-    history = CONVERSATIONS.setdefault(session_id, [])
-    # Ghép history vào prompt đầu vào đơn giản
-    history_text = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in history[-6:]])  # last 6 turns
-    augmented_query = f"Lịch sử trước đó:\n{history_text}\n\nNgười dùng hỏi: {req.query}" if history else req.query
-    result = invoke_agent(augmented_query)
-    output = result.get("output", "")
-    # Cập nhật history
-    history.append({"role": "user", "content": req.query})
-    history.append({"role": "assistant", "content": output})
+    history = get_history(session_id, limit=12)
+    # Build history text from last N messages
+    history_text = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in history[-12:]]) if history else ""
+    augmented_query = f"Lịch sử trước đó:\n{history_text}\n\nNgười dùng hỏi: {req.query}" if history_text else req.query
+    try:
+        result = invoke_agent(augmented_query)
+        output = result.get("output", "")
+    except Exception as e:
+        import traceback
+
+        print(f"[api.invoke] error invoking agent for session={session_id}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"agent error: {e}")
+    # Persist messages
+    append_messages(session_id, [{"role": "user", "content": req.query}, {"role": "assistant", "content": output}])
     return AgentResponse(**result, session_id=session_id)
 
 
@@ -133,9 +139,9 @@ def invoke_stream(q: str, request: Request, session_id: str | None = None):
     if not q.strip():
         raise HTTPException(status_code=400, detail="query rỗng")
     sid = session_id or "default"
-    history = CONVERSATIONS.setdefault(sid, [])
-    history_text = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in history[-6:]])
-    augmented_query = f"Lịch sử trước đó:\n{history_text}\n\nNgười dùng hỏi: {q}" if history else q
+    history = get_history(sid, limit=12)
+    history_text = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in history[-12:]]) if history else ""
+    augmented_query = f"Lịch sử trước đó:\n{history_text}\n\nNgười dùng hỏi: {q}" if history_text else q
 
     async def event_gen():
         collected = []
@@ -150,10 +156,32 @@ def invoke_stream(q: str, request: Request, session_id: str | None = None):
                     yield "event: done\ndata: [DONE]\n\n"
         except (ConnectionResetError, BrokenPipeError):
             return
-        # Lưu vào memory nếu không disconnect sớm
+        except Exception as e:
+            import traceback
+
+            print(f"[api.invoke_stream] error streaming for session={sid}: {e}")
+            traceback.print_exc()
+            # propagate a server error event and stop
+            try:
+                yield f"event: error\ndata: {str(e)}\n\n"
+            except Exception:
+                pass
+            return
+        # Lưu vào db nếu không disconnect sớm
         if collected:
             answer = "".join(collected)
-            history.append({"role": "user", "content": q})
-            history.append({"role": "assistant", "content": answer})
+            append_messages(sid, [{"role": "user", "content": q}, {"role": "assistant", "content": answer}])
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
+@app.get("/history/{session_id}")
+def get_history_endpoint(session_id: str, limit: int = 50):
+    msgs = get_history(session_id, limit=limit)
+    return {"session_id": session_id, "messages": msgs}
+
+
+@app.delete("/history/{session_id}")
+def clear_history_endpoint(session_id: str):
+    clear_history(session_id)
+    return {"session_id": session_id, "cleared": True}

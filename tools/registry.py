@@ -18,6 +18,9 @@ from services.milvus.milvus_repo import (
 import os
 from collections import Counter, defaultdict
 from datetime import datetime
+from datetime import timedelta
+import traceback
+from model.schemas import Room
 
 
 @tool
@@ -296,12 +299,7 @@ def available_meeting_rooms(time_start: str, time_end: str, booking_date: str) -
 
 @tool
 def book_meeting_room(
-    employee_name: str,
-    room_name: str,
-    time_start: str,
-    time_end: str,
-    booking_date: str,
-    purpose: str = ""
+    room: Room
 ) -> str:
     """
     Đặt phòng họp trong bệnh viện.
@@ -314,33 +312,22 @@ def book_meeting_room(
         purpose: mục đích họp (tùy chọn)
     Trả về kết quả đặt phòng (JSON).
     """
-    rooms = find_many("meeting_rooms", {"room_name": room_name}, limit=1)
-    if not rooms:
-        return json.dumps({"success": False, "message": "Không tìm thấy phòng họp."}, ensure_ascii=False)
-    bookings = find_many(
-        "schedule_booking",
-        {
-            "room_name": room_name,
-            "booking_date": booking_date,
-            "$or": [
-                {"start_time": {"$lt": time_end, "$gte": time_start}},
-                {"end_time": {"$gt": time_start, "$lte": time_end}},
-                {"start_time": {"$lte": time_start}, "end_time": {"$gte": time_end}}
-            ]
-        }
-    )
-    if bookings:
-        return json.dumps({"success": False, "message": "Phòng đã bị đặt trong khoảng thời gian này."}, ensure_ascii=False)
-    booking_info = {
-        "employee_name": employee_name,
-        "room_name": room_name,
-        "booking_date": booking_date,
-        "start_time": time_start,
-        "end_time": time_end,
-        "purpose": purpose
-    }
+    # Helper: normalize time strings and booking_date tokens
     from services.mongo.mongo_repo import insert_one
-    insert_one("schedule_booking", booking_info)
+    booking_info = {
+        "employee_name": room.employee_name,
+        "room_name": room.room_name,
+        "time_start": room.time_start,
+        "time_end": room.time_end,
+        "booking_date": room.booking_date,
+        "purpose": room.purpose,
+    }
+    try:
+        insert_one("schedule_booking", booking_info)
+    except Exception as e:
+        print(f"[book_meeting_room] insert error for booking={booking_info}: {e}")
+        traceback.print_exc()
+        return json.dumps({"success": False, "message": f"Lỗi hệ thống khi lưu booking: {e}"}, ensure_ascii=False)
     return json.dumps({"success": True, "message": "Đặt phòng thành công.", "booking": booking_info}, ensure_ascii=False)
 
 @tool
