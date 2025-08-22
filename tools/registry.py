@@ -116,17 +116,127 @@ def internet_search(query: str) -> str:
     """
     return duckduckgo_search.invoke(query)
 
+@tool
+def available_meeting_rooms(time_start: str, time_end: str, booking_date: str) -> str:
+    """
+    Tìm kiếm phòng họp còn trống trong bệnh viện theo khoảng thời gian và ngày đặt.
+    Tham số:
+        time_start: thời gian bắt đầu (HH:MM)
+        time_end: thời gian kết thúc (HH:MM)
+        booking_date: ngày đặt phòng (DD-MM-YYYY)
+    Trả về JSON danh sách phòng họp còn trống.
+    """
+    rooms = find_many("meeting_rooms")
+    bookings = find_many(
+        "schedule_booking",
+        {
+            "booking_date": booking_date,
+            "$or": [
+                {"start_time": {"$lt": time_end, "$gte": time_start}},
+                {"end_time": {"$gt": time_start, "$lte": time_end}},
+                {"start_time": {"$lte": time_start}, "end_time": {"$gte": time_end}}
+            ]
+        }
+    )
+    booked_names = set(b["room_name"] for b in bookings)
+    available_rooms = [
+        {
+            "room_name": r.get("room_name"),
+            "room_code": r.get("room_code"),
+            "location": r.get("location"),
+            "capacity": r.get("capacity"),
+            "equipment_list": r.get("equipment_list"),
+            "is_available": r.get("is_available"),
+        }
+        for r in rooms
+        if r.get("is_available", True) and r.get("room_name") not in booked_names
+    ]
+    return json.dumps({"count": len(available_rooms), "items": available_rooms}, ensure_ascii=False)
+
+@tool
+def book_meeting_room(
+    employee_name: str,
+    room_name: str,
+    time_start: str,
+    time_end: str,
+    booking_date: str,
+    purpose: str = ""
+) -> str:
+    """
+    Đặt phòng họp trong bệnh viện.
+    Tham số:
+        employee_name: tên người đặt phòng
+        room_name: tên phòng họp
+        time_start: thời gian bắt đầu (HH:MM)
+        time_end: thời gian kết thúc (HH:MM)
+        booking_date: ngày đặt phòng (DD-MM-YYYY)
+        purpose: mục đích họp (tùy chọn)
+    Trả về kết quả đặt phòng (JSON).
+    """
+    rooms = find_many("meeting_rooms", {"room_name": room_name}, limit=1)
+    if not rooms:
+        return json.dumps({"success": False, "message": "Không tìm thấy phòng họp."}, ensure_ascii=False)
+    bookings = find_many(
+        "schedule_booking",
+        {
+            "room_name": room_name,
+            "booking_date": booking_date,
+            "$or": [
+                {"start_time": {"$lt": time_end, "$gte": time_start}},
+                {"end_time": {"$gt": time_start, "$lte": time_end}},
+                {"start_time": {"$lte": time_start}, "end_time": {"$gte": time_end}}
+            ]
+        }
+    )
+    if bookings:
+        return json.dumps({"success": False, "message": "Phòng đã bị đặt trong khoảng thời gian này."}, ensure_ascii=False)
+    booking_info = {
+        "employee_name": employee_name,
+        "room_name": room_name,
+        "booking_date": booking_date,
+        "start_time": time_start,
+        "end_time": time_end,
+        "purpose": purpose
+    }
+    from services.mongo.mongo_repo import insert_one
+    insert_one("schedule_booking", booking_info)
+    return json.dumps({"success": True, "message": "Đặt phòng thành công.", "booking": booking_info}, ensure_ascii=False)
+
+@tool
+def list_meeting_rooms() -> str:
+    """
+    Lấy danh sách thông tin các phòng họp của bệnh viện.
+    Trả về JSON gồm các trường: room_name, room_code, location, capacity, equipment_list, is_available, created_at.
+    """
+    rooms = find_many("meeting_rooms")
+    items = [
+        {
+            "room_name": r.get("room_name"),
+            "room_code": r.get("room_code"),
+            "location": r.get("location"),
+            "capacity": r.get("capacity"),
+            "equipment_list": r.get("equipment_list"),
+            "is_available": r.get("is_available"),
+            "created_at": r.get("created_at"),
+        }
+        for r in rooms
+    ]
+    return json.dumps({"count": len(items), "items": items}, ensure_ascii=False)
+
 ALL_TOOLS = [
     calculator,
     hospital_list,
     echo,
     all_employees_with_departments_info,
     employees_by_department_names,
-    internet_search
+    internet_search,
+    available_meeting_rooms,
+    book_meeting_room,
+    list_meeting_rooms  # Thêm tool mới vào danh sách
 ]
 
 __all__ = [
     "calculator", "hospital_list", "echo",
     "all_employees_with_departments_info", "employees_by_department_names",
-    "internet_search", "ALL_TOOLS"
+    "internet_search", "available_meeting_rooms", "book_meeting_room", "list_meeting_rooms", "ALL_TOOLS"
 ]
